@@ -1,0 +1,13 @@
+# Keil MDK 编译输出
+MDK-ARM/convert/
+MDK-ARM/*.uvguix.*
+
+# CubeMX临时文件
+.mxproject
+
+# VSCode配置
+.vscode/
+
+# 其他
+*.log
+*.bak
