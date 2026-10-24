@@ -1,5 +1,6 @@
 #include "main.h"
 #include "adc.h"
+#include "debug_uart.h"
 #include "gpio.h"
 
 /*
@@ -11,8 +12,11 @@
 #define ADC_AVERAGE_SAMPLE_COUNT     16U
 #define ADC_POLL_TIMEOUT_MS          10U
 #define CONTROL_PERIOD_MS            20U
+#define ADC_REPORT_PERIOD_MS       1000U
+#define ADC_REFERENCE_MV           3300U
 
-static uint32_t ADC_ReadAverage(void);
+static HAL_StatusTypeDef ADC_ReadAverage(uint32_t *adc_value);
+static void ADC_ReportValue(uint32_t adc_value);
 static void LightControl_Update(uint32_t adc_value);
 
 void SystemClock_Config(void);
@@ -22,22 +26,48 @@ int main(void)
   HAL_Init();
   SystemClock_Config();
   MX_GPIO_Init();
+  Debug_UART_Init();
   MX_ADC1_Init();
+
+  Debug_UART_WriteString("\r\n[SYS] Debug UART ready: USART2 TX=PA2, 115200 8N1\r\n");
 
   /* STM32F1 ADC 在首次使用前需要校准。 */
   if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
   {
+    Debug_UART_WriteString("[ADC] calibration FAILED\r\n");
     Error_Handler();
   }
+  Debug_UART_WriteString("[ADC] calibration OK\r\n");
 
   if (HAL_ADC_Start(&hadc1) != HAL_OK)
   {
+    Debug_UART_WriteString("[ADC] start FAILED\r\n");
     Error_Handler();
   }
+  Debug_UART_WriteString("[ADC] conversion started\r\n");
 
   while (1)
   {
-    LightControl_Update(ADC_ReadAverage());
+    static uint32_t last_report_tick = 0U;
+    static uint8_t first_report = 1U;
+    uint32_t adc_value;
+
+    if (ADC_ReadAverage(&adc_value) != HAL_OK)
+    {
+      Debug_UART_WriteString("[ADC] read FAILED: conversion timeout\r\n");
+      Error_Handler();
+    }
+
+    LightControl_Update(adc_value);
+
+    if ((first_report != 0U) ||
+        ((HAL_GetTick() - last_report_tick) >= ADC_REPORT_PERIOD_MS))
+    {
+      ADC_ReportValue(adc_value);
+      last_report_tick = HAL_GetTick();
+      first_report = 0U;
+    }
+
     HAL_Delay(CONTROL_PERIOD_MS);
   }
 }
@@ -45,22 +75,44 @@ int main(void)
 /**
  * @brief 读取多次 ADC 转换并取平均值，抑制采样噪声。
  */
-static uint32_t ADC_ReadAverage(void)
+static HAL_StatusTypeDef ADC_ReadAverage(uint32_t *adc_value)
 {
   uint32_t sum = 0U;
   uint32_t i;
+
+  if (adc_value == NULL)
+  {
+    return HAL_ERROR;
+  }
 
   for (i = 0U; i < ADC_AVERAGE_SAMPLE_COUNT; ++i)
   {
     if (HAL_ADC_PollForConversion(&hadc1, ADC_POLL_TIMEOUT_MS) != HAL_OK)
     {
-      Error_Handler();
+      return HAL_TIMEOUT;
     }
 
     sum += HAL_ADC_GetValue(&hadc1);
   }
 
-  return sum / ADC_AVERAGE_SAMPLE_COUNT;
+  *adc_value = sum / ADC_AVERAGE_SAMPLE_COUNT;
+  return HAL_OK;
+}
+
+/**
+ * @brief 每秒输出一次 ADC 读取结果。
+ */
+static void ADC_ReportValue(uint32_t adc_value)
+{
+  uint32_t voltage_mv;
+
+  voltage_mv = ((adc_value * ADC_REFERENCE_MV) + 2047U) / 4095U;
+
+  Debug_UART_WriteString("[ADC] read OK: raw=");
+  Debug_UART_WriteUInt(adc_value);
+  Debug_UART_WriteString(", voltage=");
+  Debug_UART_WriteUInt(voltage_mv);
+  Debug_UART_WriteString(" mV\r\n");
 }
 
 /**
@@ -69,21 +121,38 @@ static uint32_t ADC_ReadAverage(void)
 static void LightControl_Update(uint32_t adc_value)
 {
   static GPIO_PinState led_state = LED_OFF_STATE;
+  static uint8_t state_initialized = 0U;
+  GPIO_PinState new_state = led_state;
 
   if (adc_value >= ADC_DARK_ON_THRESHOLD)
   {
-    led_state = LED_ON_STATE;
+    new_state = LED_ON_STATE;
   }
   else if (adc_value <= ADC_LIGHT_OFF_THRESHOLD)
   {
-    led_state = LED_OFF_STATE;
+    new_state = LED_OFF_STATE;
   }
   else
   {
     /* 迟滞区间内保持原状态。 */
   }
 
-  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, led_state);
+  if ((state_initialized == 0U) || (new_state != led_state))
+  {
+    led_state = new_state;
+    HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, led_state);
+
+    if (led_state == LED_ON_STATE)
+    {
+      Debug_UART_WriteString("[LIGHT] dark detected -> LED ON\r\n");
+    }
+    else
+    {
+      Debug_UART_WriteString("[LIGHT] bright detected -> LED OFF\r\n");
+    }
+
+    state_initialized = 1U;
+  }
 }
 
 void SystemClock_Config(void)

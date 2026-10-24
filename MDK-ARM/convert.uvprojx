@@ -406,6 +406,11 @@
               <FilePath>../Core/Src/adc.c</FilePath>
             </File>
             <File>
+              <FileName>debug_uart.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../Core/Src/debug_uart.c</FilePath>
+            </File>
+            <File>
               <FileName>stm32f1xx_it.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/stm32f1xx_it.c</FilePath>
